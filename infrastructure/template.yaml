@@ -1,0 +1,303 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Darwinian Agent Engine - Serverless AI Evaluation & Prompt Evolution System
+
+Globals:
+  Function:
+    Runtime: python3.11
+    Timeout: 300
+    MemorySize: 512
+    Environment:
+      Variables:
+        DYNAMODB_TABLE: !Ref DynamoDBTableName
+
+Parameters:
+  DynamoDBTableName:
+    Type: String
+    Default: DarwinianGenePool
+    Description: Name of the existing DynamoDB table
+
+Resources:
+
+  # DynamoDB Table
+  
+  DarwinianGenePoolTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Ref DynamoDBTableName
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+  # API Gateway
+  ChatApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: Prod
+      Cors:
+        AllowMethods: "'POST, OPTIONS'"
+        AllowHeaders: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+        AllowOrigin: "'*'"
+
+  # API Key
+  ClientApiKey:
+    Type: AWS::ApiGateway::ApiKey
+    Properties:
+      Name: ClientApiKey
+      Enabled: true
+
+  # Usage Plan
+  ApiUsagePlan:
+    Type: AWS::ApiGateway::UsagePlan 
+    DependsOn:
+      - ChatApi
+      - ChatApiProdStage
+    Properties:
+      UsagePlanName: ClientUsagePlan
+      ApiStages:
+        - ApiId: !Ref ChatApi
+          Stage: Prod
+      Throttle:
+        RateLimit: 1
+        BurstLimit: 2
+      Quota:
+        Limit: 100
+        Period: DAY
+
+  # Usage Plan Key
+  ApiUsagePlanKey:
+    Type: AWS::ApiGateway::UsagePlanKey
+    Properties:
+      KeyId: !Ref ClientApiKey
+      KeyType: API_KEY
+      UsagePlanId: !Ref ApiUsagePlan
+
+  # Lambda Functions
+  ProxyAgentFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../backend/functions/proxy_agent/
+      Handler: app.lambda_handler
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref DynamoDBTableName
+        - Statement:
+            - Effect: Allow
+              Action:
+                - events:PutEvents
+              Resource: !Sub arn:aws:events:${AWS::Region}:${AWS::AccountId}:event-bus/default
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+              Resource: '*'
+      Events:
+        ChatEndpoint:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ChatApi
+            Path: /chat
+            Method: POST
+            Auth:
+              ApiKeyRequired: true
+
+  FeedbackAgentFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../backend/functions/feedback_agent/
+      Handler: app.lambda_handler
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref DynamoDBTableName
+        - Statement:
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+              Resource: '*'
+      Events:
+        FeedbackEndpoint:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ChatApi
+            Path: /feedback
+            Method: POST
+            Auth:
+              ApiKeyRequired: true
+
+  CriticAgentFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../backend/functions/critic_agent/
+      Handler: app.lambda_handler
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref DynamoDBTableName
+        - Statement:
+            - Effect: Allow
+              Action:
+                - events:PutEvents
+              Resource: !Sub arn:aws:events:${AWS::Region}:${AWS::AccountId}:event-bus/default
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+              Resource: '*'
+
+  MutatorAgentFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../backend/functions/mutator_agent/
+      Handler: app.lambda_handler
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref DynamoDBTableName
+        - Statement:
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+              Resource: '*'
+
+  JudgeAgentFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../backend/functions/judge_agent/
+      Handler: app.lambda_handler
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref DynamoDBTableName
+        - Statement:
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+              Resource: '*'
+
+  SupervisorAgentFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../backend/functions/supervisor_agent/
+      Handler: app.lambda_handler
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref DynamoDBTableName
+        - Statement:
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+              Resource: '*'
+
+  # Step Functions State Machine
+  StepFunctionsExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: states.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: InvokeLambdaPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource:
+                  - !GetAtt MutatorAgentFunction.Arn
+                  - !GetAtt JudgeAgentFunction.Arn
+                  - !GetAtt SupervisorAgentFunction.Arn
+
+  DarwinianEvolutionLoop:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      Name: DarwinianEvolutionLoop
+      DefinitionUri: statemachines/evolution_loop.asl.json
+      DefinitionSubstitutions:
+        MutatorFunctionArn: !GetAtt MutatorAgentFunction.Arn
+        JudgeFunctionArn: !GetAtt JudgeAgentFunction.Arn
+        SupervisorFunctionArn: !GetAtt SupervisorAgentFunction.Arn
+      Role: !GetAtt StepFunctionsExecutionRole.Arn
+
+  # EventBridge Rules
+  EventBridgeToStepFunctionsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: StartStepFunctionsPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - states:StartExecution
+                Resource: !GetAtt DarwinianEvolutionLoop.Arn
+
+  ChatResponseGeneratedRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: Invokes Critic Lambda when chat response is generated
+      EventBusName: default
+      EventPattern:
+        source:
+          - chat.proxy
+        detail-type:
+          - ChatResponseGenerated
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt CriticAgentFunction.Arn
+          Id: CriticAgentTarget
+
+  CriticAgentInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref CriticAgentFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt ChatResponseGeneratedRule.Arn
+
+  EvaluationPassedRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: Starts Step Functions execution when evaluation passes
+      EventBusName: default
+      EventPattern:
+        source:
+          - ai.critic
+        detail-type:
+          - EvaluationPassed
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt DarwinianEvolutionLoop.Arn
+          Id: EvolutionLoopTarget
+          RoleArn: !GetAtt EventBridgeToStepFunctionsRole.Arn
+
+Outputs:
+  ChatApiUrl:
+    Description: API Gateway endpoint URL for chat
+    Value: !Sub https://${ChatApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/chat
+  FeedbackApiUrl:
+    Description: API Gateway endpoint URL for feedback
+    Value: !Sub https://${ChatApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/feedback
+  StateMachineArn:
+    Description: ARN of the Darwinian Evolution Loop state machine
+    Value: !GetAtt DarwinianEvolutionLoop.Arn
+  ApiBaseUrl:
+    Description: API Gateway base URL
+    Value: !Sub https://${ChatApi}.execute-api.${AWS::Region}.amazonaws.com/Prod
+  ClientApiKeyValue:
+    Description: API Key for client authentication
+    Value: !Ref ClientApiKey 

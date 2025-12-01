@@ -1,0 +1,134 @@
+{
+  "Comment": "Darwinian Evolution Loop - Mutator -> Judge -> Supervisor with global retry counter",
+  "StartAt": "InitializeRetryCount",
+  "States": {
+    "InitializeRetryCount": {
+      "Type": "Pass",
+      "Result": 0,
+      "ResultPath": "$.retryCount",
+      "Next": "InvokeMutator"
+    },
+    "InvokeMutator": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${MutatorFunctionArn}",
+        "Payload.$": "$"
+      },
+      "ResultPath": "$.mutatorResult",
+      "ResultSelector": {
+        "Payload.$": "$.Payload"
+      },
+      "Next": "InvokeJudge",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
+          "Next": "WorkflowFailed"
+        }
+      ]
+    },
+    "InvokeJudge": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${JudgeFunctionArn}",
+        "Payload": {
+          "mutatorResult.$": "$.mutatorResult.Payload",
+          "originalInput.$": "$"
+        }
+      },
+      "ResultPath": "$.judgeResult",
+      "ResultSelector": {
+        "Payload.$": "$.Payload"
+      },
+      "Next": "CheckJudgeDecision",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.judgeError",
+          "Next": "CheckRetryCount"
+        }
+      ]
+    },
+    "CheckJudgeDecision": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.judgeResult.Payload.improved",
+          "BooleanEquals": true,
+          "Next": "InvokeSupervisor"
+        }
+      ],
+      "Default": "CheckRetryCount"
+    },
+    "InvokeSupervisor": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${SupervisorFunctionArn}",
+        "Payload": {
+          "mutatorResult.$": "$.mutatorResult.Payload",
+          "judgeResult.$": "$.judgeResult.Payload",
+          "originalInput.$": "$"
+        }
+      },
+      "ResultPath": "$.supervisorResult",
+      "ResultSelector": {
+        "Payload.$": "$.Payload"
+      },
+      "Next": "CheckSupervisorDecision",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.supervisorError",
+          "Next": "CheckRetryCount"
+        }
+      ]
+    },
+    "CheckSupervisorDecision": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.supervisorResult.Payload.compliant",
+          "BooleanEquals": true,
+          "Next": "EvolutionSuccess"
+        }
+      ],
+      "Default": "CheckRetryCount"
+    },
+    "CheckRetryCount": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.retryCount",
+          "NumericLessThan": 1,
+          "Next": "IncrementRetryCount"
+        }
+      ],
+      "Default": "MaxRetriesReached"
+    },
+    "IncrementRetryCount": {
+      "Type": "Pass",
+      "Parameters": {
+        "retryCount.$": "States.MathAdd($.retryCount, 1)",
+        "detail.$": "$.detail", 
+        "retryContext": {
+            "previous_failure_reason": "Automated Retry Triggered"
+        }
+      },
+      "Next": "InvokeMutator"
+    },
+    "MaxRetriesReached": {
+      "Type": "Succeed"
+    },
+    "EvolutionSuccess": {
+      "Type": "Succeed"
+    },
+    "WorkflowFailed": {
+      "Type": "Fail",
+      "Error": "WorkflowError",
+      "Cause": "Critical failure in evolution workflow"
+    }
+  }
+}
