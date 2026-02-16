@@ -638,7 +638,8 @@ Built with ❤️ for the AWS Global Vibe Code Hackathon 2025
 For questions, feedback, or collaboration opportunities:
 
 - **GitHub Issues**: [Create an issue](https://github.com/Shantanu-00/darwinian-agent-engine/issues)
-- **Email**: shantanu1.edu@example.com
+- **Email**: shantanu1.edu@gmail.com
+- 
 
 
 ---
